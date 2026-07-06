@@ -7,20 +7,20 @@ from pathlib import Path
 import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-STRAVA_PATH = DATA_DIR / "strava_rides.parquet"
-TRAINERROAD_PATH = DATA_DIR / "trainerroad_rides.parquet"
+STRAVA_PATH = DATA_DIR / "strava_rides.pkl"
+TRAINERROAD_PATH = DATA_DIR / "trainerroad_rides.pkl"
 GOALS_PATH = DATA_DIR / "goals.json"
 
 
 def save_rides(df: pd.DataFrame, path: Path) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    df.to_pickle(path)
 
 
 def load_rides(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
-    return pd.read_parquet(path)
+    return pd.read_pickle(path)
 
 
 def save_goals(goals: dict) -> None:
