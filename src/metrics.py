@@ -81,6 +81,38 @@ def _is_leap(year: int) -> bool:
     return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
 
 
+DEFAULT_IF_NO_POWER = 0.65  # assumed intensity factor for rides with no power data
+
+
+def estimate_tss(rides: pd.DataFrame, ftp: float | None) -> pd.DataFrame:
+    """Adds a 'tss' column estimated from power data (or a flat assumed
+    intensity for rides with no power meter). Requires a current FTP —
+    returns all-NaN 'tss' if none is set."""
+    df = rides.copy()
+    if not ftp:
+        df["tss"] = pd.NA
+        return df
+
+    hours = df["moving_time_min"] / 60
+    intensity_power = df["weighted_avg_watts"].fillna(df["avg_watts"])
+    intensity_factor = intensity_power / ftp
+
+    df["tss"] = hours * intensity_factor ** 2 * 100
+    missing_power = intensity_power.isna()
+    df.loc[missing_power, "tss"] = hours[missing_power] * (DEFAULT_IF_NO_POWER ** 2) * 100
+    return df
+
+
+def weekly_tss(rides_with_tss: pd.DataFrame) -> pd.DataFrame:
+    if rides_with_tss.empty or "tss" not in rides_with_tss.columns:
+        return pd.DataFrame(columns=["week_start", "tss"])
+
+    df = rides_with_tss.copy()
+    df["week_start"] = df["date"].dt.to_period("W-MON").apply(lambda p: p.start_time)
+    grouped = df.groupby("week_start")["tss"].sum().reset_index()
+    return grouped.sort_values("week_start").reset_index(drop=True)
+
+
 def recent_weekly_average(weekly: pd.DataFrame, num_weeks: int = 4) -> dict:
     if weekly.empty:
         return {"rides": 0.0, "hours": 0.0}

@@ -13,6 +13,7 @@ from src import goals as goals_mod
 from src import metrics
 from src import power_stream
 from src import storage
+from src import training_plan
 from src import workout_detection
 from src.ingestion import strava as strava_ingest
 from src.ingestion import trainerroad as trainerroad_ingest
@@ -379,9 +380,80 @@ def page_rides() -> None:
         st.plotly_chart(fig, width='stretch')
 
 
+def page_training_plan() -> None:
+    st.header("Training Plan")
+    st.caption(
+        "Heuristic, not a physiological model: TSS is estimated from ride-summary power "
+        "(not a full power-duration curve), and the pace assessment is a read of your "
+        "recent load trend, not a guarantee. Use this as a starting point to adjust."
+    )
+
+    strava_rides = st.session_state.strava_rides
+    goals = st.session_state.goals
+
+    if strava_rides is None or strava_rides.empty:
+        st.info("No Strava data loaded yet — head to **Upload Data** to get started.")
+        return
+
+    current_ftp = goals["ftp"].get("current_watts")
+    if not current_ftp:
+        st.warning("Set your current FTP on the **Goals** page first — training load estimates need it.")
+        return
+
+    rides_tss = metrics.estimate_tss(strava_rides, current_ftp)
+    weekly = metrics.weekly_tss(rides_tss)
+
+    if len(weekly) < 3:
+        st.info("Not enough ride history yet to establish a training-load trend.")
+        return
+
+    st.subheader("Training load")
+    recent_avg = weekly.tail(training_plan.ROLLING_WEEKS)["tss"].mean()
+    st.metric("Rolling 6-week avg TSS/week", f"{recent_avg:.0f}")
+
+    fig = px.bar(weekly, x="week_start", y="tss", labels={"week_start": "week", "tss": "TSS"})
+    fig.add_scatter(
+        x=weekly["week_start"], y=weekly["tss"].rolling(training_plan.ROLLING_WEEKS).mean(),
+        mode="lines", name="6-wk rolling avg",
+    )
+    st.plotly_chart(fig, width='stretch')
+
+    pace = training_plan.assess_ftp_pace(weekly, goals["ftp"])
+    st.info(pace["message"])
+
+    overreach_events = training_plan.detect_overreach_events(weekly)
+    if overreach_events:
+        dates = ", ".join(pd.Timestamp(e["week_start"]).strftime("%b %-d") for e in overreach_events[-5:])
+        st.caption(
+            f"Detected past week(s) where load spiked then dropped sharply (a rough burnout proxy): "
+            f"{dates}. Future ramps are kept more conservative as a result."
+        )
+
+    st.divider()
+    st.subheader("Next 2 weeks")
+
+    ride_days_per_week = goals["consistency"].get("target_rides_per_week", 4)
+    plan = training_plan.build_two_week_plan(
+        strava_rides, goals["ftp"], ride_days_per_week, weekly, today=dt.date.today(),
+    )
+
+    for week in plan["weeks"]:
+        st.write(
+            f"**Week {week['week_num']} — {week['kind'].title()}** "
+            f"(target ~{week['target_tss']:.0f} TSS, planned ~{week['planned_total_tss']:.0f} TSS)"
+        )
+        table = pd.DataFrame(week["days"])
+        table["date"] = table["date"].apply(lambda d: d.strftime("%a %b %-d"))
+        table = table.rename(columns={
+            "date": "Date", "label": "Workout", "duration_min": "Duration (min)", "est_tss": "Est. TSS",
+        })[["Date", "Workout", "Duration (min)", "Est. TSS"]]
+        st.dataframe(table, width='stretch', hide_index=True)
+
+
 PAGES = {
     "Dashboard": page_dashboard,
     "Goals": page_goals,
+    "Training Plan": page_training_plan,
     "Upload Data": page_upload,
     "Rides Explorer": page_rides,
 }

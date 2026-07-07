@@ -34,6 +34,12 @@ Configure targets for each on the **Goals** page:
 
 On the **Rides Explorer** page, select any ride to see its power stream and a best-effort label of its interval structure (e.g. `5 x 5:00 @ 279W, 3:00 recovery` or `Steady effort @ 150W`). This is inferred from the ride's raw power-vs-time data — it's a heuristic (segments the power stream into work/rest blocks and looks for repeats), not an exact reconstruction of whatever workout was actually prescribed, so treat the label as approximate. Requires the full Strava zip (see above) — no power stream, no detection.
 
+## Training plan
+
+The **Training Plan** page estimates TSS per ride from your power data and current FTP, tracks a rolling 6-week load trend, and flags past weeks where load spiked then crashed (a rough burnout proxy — future ramps are kept gentler if this shows up in your history). It then proposes a 2-week day-by-day schedule (e.g. `Tue: 20 x 0:30`, `Sat: Long endurance ride`) sized to a sensible ramp off your recent load, using your Consistency goal for how many days/week and your ride history for which weekdays and which day is your long ride.
+
+This is a heuristic assistant, not a coach: TSS is estimated (not computed from a real power-duration curve), and "on pace for your FTP goal" is a qualitative read of load trend, not a physiological projection. Requires a current FTP set on the Goals page.
+
 ## Design notes
 
 Strava is treated as the source of truth for ride volume, distance, elevation, and power data (it captures both outdoor and synced indoor rides, and its bulk export includes the raw FIT files needed for interval detection). TrainerRoad, if you have an export, only adds FTP history on top of that.
