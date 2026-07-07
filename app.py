@@ -11,7 +11,9 @@ import streamlit as st
 
 from src import goals as goals_mod
 from src import metrics
+from src import power_stream
 from src import storage
+from src import workout_detection
 from src.ingestion import strava as strava_ingest
 from src.ingestion import trainerroad as trainerroad_ingest
 
@@ -25,6 +27,10 @@ def _init_state() -> None:
         st.session_state.trainerroad_rides = storage.load_rides(storage.TRAINERROAD_PATH)
     if "goals" not in st.session_state:
         st.session_state.goals = storage.load_goals() or goals_mod.default_goals()
+    if "strava_zip_path" not in st.session_state:
+        st.session_state.strava_zip_path = storage.load_strava_zip_path()
+    if "workout_cache" not in st.session_state:
+        st.session_state.workout_cache = storage.load_workout_cache()
 
 
 _init_state()
@@ -32,16 +38,34 @@ _init_state()
 
 def page_upload() -> None:
     st.header("Upload your ride data")
+
+    st.subheader("Strava export")
     st.caption(
-        "Strava: Settings → My Account → Download or Delete Your Account → "
-        "Bulk Export (email you a zip). Upload the zip, or just `activities.csv` from it.\n\n"
-        "TrainerRoad: export your workout history / career CSV from trainerroad.com."
+        "Settings → My Account → Download or Delete Your Account → Bulk Export "
+        "(Strava emails you a zip). If it's large (the zip with individual activity "
+        "files can easily be 1GB+), don't upload it through the browser — point the "
+        "app at the file on disk instead."
     )
 
-    col1, col2 = st.columns(2)
+    zip_path_input = st.text_input(
+        "Local path to your Strava export zip (or activities.csv)",
+        value=st.session_state.strava_zip_path or "",
+        placeholder="/Users/you/Downloads/export_12345.zip",
+    )
+    if st.button("Load from path"):
+        try:
+            df = strava_ingest.load_strava_export_from_path(zip_path_input)
+        except Exception as exc:
+            st.error(f"Couldn't load that file: {exc}")
+        else:
+            st.session_state.strava_rides = df
+            storage.save_rides(df, storage.STRAVA_PATH)
+            if zip_path_input.lower().endswith(".zip"):
+                st.session_state.strava_zip_path = zip_path_input
+                storage.save_strava_zip_path(zip_path_input)
+            st.success(f"Loaded {len(df)} rides from Strava.")
 
-    with col1:
-        st.subheader("Strava export")
+    with st.expander("Or upload directly (fine for files under a couple hundred MB)"):
         strava_file = st.file_uploader("activities.csv or export.zip", type=["csv", "zip"], key="strava_upl")
         if strava_file is not None:
             try:
@@ -60,35 +84,39 @@ def page_upload() -> None:
             storage.save_rides(df, storage.STRAVA_PATH)
             st.success(f"Loaded {len(df)} sample rides.")
 
-        rides = st.session_state.strava_rides
-        if rides is not None and not rides.empty:
-            st.metric("Rides loaded", len(rides))
-            st.caption(f"{rides['date'].min().date()} — {rides['date'].max().date()}")
+    rides = st.session_state.strava_rides
+    if rides is not None and not rides.empty:
+        st.metric("Rides loaded", len(rides))
+        st.caption(f"{rides['date'].min().date()} — {rides['date'].max().date()}")
+        if st.session_state.strava_zip_path:
+            st.caption(
+                f"Using `{st.session_state.strava_zip_path}` for per-ride power data "
+                "(workout structure detection) on the Rides Explorer page."
+            )
 
-    with col2:
-        st.subheader("TrainerRoad export")
-        tr_file = st.file_uploader("workout history CSV", type=["csv"], key="tr_upl")
-        if tr_file is not None:
-            try:
-                df = trainerroad_ingest.load_trainerroad_export(tr_file)
-            except Exception as exc:
-                st.error(f"Couldn't parse that file: {exc}")
-            else:
-                st.session_state.trainerroad_rides = df
-                storage.save_rides(df, storage.TRAINERROAD_PATH)
-                st.success(f"Loaded {len(df)} workouts from TrainerRoad.")
+    st.divider()
 
-        if st.button("Load sample TrainerRoad data"):
-            with open("sample_data/trainerroad_sample.csv", "rb") as f:
-                df = trainerroad_ingest.load_trainerroad_export(f)
+    st.subheader("TrainerRoad export (optional)")
+    st.caption(
+        "If your TrainerRoad plan lets you export workout history / career CSV, you "
+        "can add it here for FTP history. If not — no problem, set your current FTP "
+        "manually on the Goals page instead."
+    )
+    tr_file = st.file_uploader("workout history CSV", type=["csv"], key="tr_upl")
+    if tr_file is not None:
+        try:
+            df = trainerroad_ingest.load_trainerroad_export(tr_file)
+        except Exception as exc:
+            st.error(f"Couldn't parse that file: {exc}")
+        else:
             st.session_state.trainerroad_rides = df
             storage.save_rides(df, storage.TRAINERROAD_PATH)
-            st.success(f"Loaded {len(df)} sample workouts.")
+            st.success(f"Loaded {len(df)} workouts from TrainerRoad.")
 
-        tr_rides = st.session_state.trainerroad_rides
-        if tr_rides is not None and not tr_rides.empty:
-            st.metric("Workouts loaded", len(tr_rides))
-            st.caption(f"{tr_rides['date'].min().date()} — {tr_rides['date'].max().date()}")
+    tr_rides = st.session_state.trainerroad_rides
+    if tr_rides is not None and not tr_rides.empty:
+        st.metric("Workouts loaded", len(tr_rides))
+        st.caption(f"{tr_rides['date'].min().date()} — {tr_rides['date'].max().date()}")
 
 
 def page_goals() -> None:
@@ -98,6 +126,11 @@ def page_goals() -> None:
     with st.form("goals_form"):
         st.subheader("FTP / power")
         ftp_enabled = st.checkbox("Track FTP goal", value=goals["ftp"]["enabled"])
+        current_ftp_value = goals["ftp"].get("current_watts")
+        ftp_current = st.number_input(
+            "Current FTP (watts) — enter your latest known value",
+            min_value=0, value=int(current_ftp_value) if current_ftp_value else 0,
+        )
         ftp_target = st.number_input("Target FTP (watts)", min_value=0, value=int(goals["ftp"]["target_watts"]))
         ftp_date = st.date_input(
             "Target date",
@@ -126,7 +159,12 @@ def page_goals() -> None:
         if st.form_submit_button("Save goals"):
             year = dt.date.today().year
             new_goals = {
-                "ftp": {"enabled": ftp_enabled, "target_watts": ftp_target, "target_date": ftp_date.isoformat()},
+                "ftp": {
+                    "enabled": ftp_enabled,
+                    "target_watts": ftp_target,
+                    "target_date": ftp_date.isoformat(),
+                    "current_watts": ftp_current or None,
+                },
                 "distance": {"enabled": dist_enabled, "target_miles": dist_target, "year": year},
                 "elevation": {"enabled": elev_enabled, "target_ft": elev_target, "year": year},
                 "consistency": {"enabled": cons_enabled, "target_rides_per_week": cons_target},
@@ -210,7 +248,10 @@ def page_dashboard() -> None:
             else:
                 st.caption("No FTP values found in your TrainerRoad export.")
         else:
-            st.caption("Upload TrainerRoad data to see FTP progression.")
+            st.caption(
+                "No FTP history to chart — set your current FTP manually on the "
+                "Goals page, or upload a TrainerRoad export for a history line."
+            )
 
     with chart_col2:
         st.subheader("Weekly volume")
@@ -282,14 +323,60 @@ def page_rides() -> None:
             f"on {longest['date'].date()}"
         )
 
-    st.dataframe(
-        filtered[[
-            "date", "name", "sport_type", "distance_mi", "moving_time_min",
-            "elevation_gain_ft", "avg_watts", "avg_hr",
-        ]].sort_values("date", ascending=False),
+    display_cols = [
+        "date", "name", "sport_type", "distance_mi", "moving_time_min",
+        "elevation_gain_ft", "avg_watts", "avg_hr",
+    ]
+    table = filtered.sort_values("date", ascending=False).reset_index(drop=True)
+
+    selection = st.dataframe(
+        table[display_cols],
         width='stretch',
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="rides_table",
     )
+
+    st.divider()
+    st.subheader("Workout structure")
+
+    zip_path = st.session_state.strava_zip_path
+    if not zip_path:
+        st.caption(
+            "Point the Upload Data page at your local Strava export **zip** (not just "
+            "activities.csv) to detect interval structure from power data."
+        )
+        return
+
+    rows = selection.get("selection", {}).get("rows", []) if selection else []
+    if not rows:
+        st.caption("Select a ride above to see its detected interval structure.")
+        return
+
+    ride = table.iloc[rows[0]]
+    activity_id = str(ride["activity_id"])
+    st.write(f"**{ride['name']}** — {ride['date'].date()}")
+
+    with st.spinner("Extracting power data..."):
+        stream = power_stream.get_power_stream(zip_path, ride.get("filename"))
+
+    cache = st.session_state.workout_cache
+    if activity_id in cache:
+        result = cache[activity_id]
+    elif stream is not None:
+        current_ftp = st.session_state.goals["ftp"].get("current_watts")
+        result = workout_detection.detect_intervals(stream, ftp=current_ftp)
+        cache[activity_id] = {"label": result["label"], "repeats": result["repeats"]}
+        storage.save_workout_cache(cache)
+    else:
+        result = {"label": "No power data found for this ride."}
+
+    st.info(result["label"])
+
+    if stream is not None and not stream.empty:
+        fig = px.line(stream, x="elapsed_s", y="watts", labels={"elapsed_s": "seconds", "watts": "watts"})
+        st.plotly_chart(fig, width='stretch')
 
 
 PAGES = {

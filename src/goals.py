@@ -16,6 +16,7 @@ def default_goals() -> dict:
             "enabled": True,
             "target_watts": 250,
             "target_date": f"{year}-12-31",
+            "current_watts": None,
         },
         "distance": {
             "enabled": True,
@@ -36,7 +37,9 @@ def default_goals() -> dict:
 
 def ftp_progress(tr_rides: pd.DataFrame, goal: dict) -> dict:
     history = tr_ingest.ftp_history(tr_rides) if tr_rides is not None and not tr_rides.empty else pd.DataFrame()
-    current = float(history["ftp"].iloc[-1]) if not history.empty else None
+    current = goal.get("current_watts")
+    if current is None and not history.empty:
+        current = float(history["ftp"].iloc[-1])
     target = goal.get("target_watts")
     pct = min(current / target, 1.0) if current and target else None
     return {

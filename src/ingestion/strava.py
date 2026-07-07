@@ -1,8 +1,8 @@
 """Parse a Strava bulk-export activities.csv into a normalized rides DataFrame."""
 from __future__ import annotations
 
-import io
 import zipfile
+from pathlib import Path
 
 import pandas as pd
 
@@ -27,6 +27,7 @@ COLUMN_ALIASES = {
     "date": ["Activity Date"],
     "name": ["Activity Name"],
     "sport_type": ["Activity Type"],
+    "filename": ["Filename"],
     "elapsed_time_s": ["Elapsed Time.1", "Elapsed Time"],
     "moving_time_s": ["Moving Time"],
     "distance_m": ["Distance.1", "Distance"],
@@ -49,26 +50,48 @@ def _pick_column(df: pd.DataFrame, aliases: list[str]) -> pd.Series | None:
     return None
 
 
-def _read_activities_csv(raw_bytes: bytes) -> pd.DataFrame:
-    return pd.read_csv(io.BytesIO(raw_bytes), low_memory=False)
+def _read_activities_csv_from_zip(zf: zipfile.ZipFile) -> pd.DataFrame:
+    csv_name = next((n for n in zf.namelist() if n.lower().endswith("activities.csv")), None)
+    if csv_name is None:
+        raise ValueError("Couldn't find activities.csv inside that zip.")
+    with zf.open(csv_name) as f:
+        return pd.read_csv(f, low_memory=False)
 
 
 def load_strava_export(uploaded_file) -> pd.DataFrame:
-    """Accepts a Strava bulk-export .zip or a bare activities.csv file-like object."""
+    """Accepts a Strava bulk-export .zip or a bare activities.csv file-like object.
+
+    Reads only the activities.csv member out of the zip (never buffers the
+    whole archive in memory), so this is safe to use even on multi-GB exports.
+    """
     name = getattr(uploaded_file, "name", "") or ""
-    raw = uploaded_file.read()
+    if name.lower().endswith(".zip"):
+        with zipfile.ZipFile(uploaded_file) as zf:
+            df = _read_activities_csv_from_zip(zf)
+    else:
+        df = pd.read_csv(uploaded_file, low_memory=False)
 
-    if name.lower().endswith(".zip") or zipfile.is_zipfile(io.BytesIO(raw)):
-        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-            csv_name = next(
-                (n for n in zf.namelist() if n.lower().endswith("activities.csv")), None
-            )
-            if csv_name is None:
-                raise ValueError("Couldn't find activities.csv inside the uploaded zip.")
-            raw = zf.read(csv_name)
+    return _normalize(df)
 
-    df = _read_activities_csv(raw)
 
+def load_strava_export_from_path(path: str | Path) -> pd.DataFrame:
+    """Like load_strava_export, but reads straight from a local zip/csv path on
+    disk instead of an in-memory upload — use this for large exports so the
+    file never has to pass through the browser upload widget."""
+    path = Path(path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"No such file: {path}")
+
+    if path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as zf:
+            df = _read_activities_csv_from_zip(zf)
+    else:
+        df = pd.read_csv(path, low_memory=False)
+
+    return _normalize(df)
+
+
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     normalized = pd.DataFrame()
     for field, aliases in COLUMN_ALIASES.items():
         col = _pick_column(df, aliases)
